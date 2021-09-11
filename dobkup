@@ -1,13 +1,6 @@
 #!/bin/bash
 
-DIR_MD5="$DIR_TRG"/.md5s
-DIR_TRASH="$DIR_TRG"/.trash
-
-LST_TMP_FILE="$DIR_TRG"/.lst.tmp
-
-HELP_MSG='Usage: dobkup SOURCE_DIR TARGET_ROOT_DIR'
-
-#################################
+HELP_MSG='Usage: dobkup SOURCE_DIR TARGET_ROOT_DIR [TARGET_DIR_NAME]'
 
 throw() {
 	ERR=$1
@@ -27,6 +20,39 @@ dir_is_empty() {
 	[ ! "$(ls -A "$1")" ]
 }
 
+init() {
+	[ -z "$1" ] || [ -z "$2" ] \
+		&& throw 1 "wrong syntax, source and target-root dirs required.\n$HELP_MSG"
+
+	DIR_SRC="$(readlink -e $1)"
+	DIR_TRG="$(readlink -e $2)"
+	[ -d "$DIR_SRC" ] \
+		|| throw 2 "wrong source dir ($DIR_SRC)."
+	dir_is_empty "$DIR_SRC" \
+		&& throw 3 "source dir ($DIR_SRC) is empty. Maybe not mounted?"
+	[ -d "$DIR_TRG" ] \
+		|| throw 4 "wrong target dir ($DIR_TRG). Create it first."
+	
+	DIR_MD5="$DIR_TRG"/.md5s
+	[ -d "$DIR_MD5" ] || mkdir "$DIR_MD5"
+
+	DIR_TRASH="$DIR_TRG"/.trash
+	[ -d "$DIR_TRASH" ] || mkdir "$DIR_TRASH"
+
+	LST_SRC_TMP_FILE=/tmp/.lst.src.tmp
+	LST_TRG_TMP_FILE=/tmp/.lst.trg.tmp
+	
+	TARGET_DIR_NAME="$3"
+	[ -z "$TARGET_DIR_NAME" ] && TARGET_DIR_NAME="$(printf $DIR_SRC | tr / % )"
+	DIR_TRG="$DIR_TRG/$TARGET_DIR_NAME"
+	[ -d "$DIR_TRG" ] \
+		|| mkdir "$DIR_TRG" \
+		|| throw 5 "can't create target dir ($DIR_TRG)."
+		
+
+}
+
+
 #############################################
 # UTILS INCLUDED AS FUNCTIONS
 
@@ -37,122 +63,90 @@ bkp() {
 }
 
 lst() {
-	# for current dir
+	[ -z "$1" ] || cd "$1"
+	
 	# if not empty
 	dir_is_empty && return
 	
 	# include hidden
 	shopt -s dotglob
 	# and exclude ".lst"
-	find * ! -name ".lst" -maxdepth 0 -type f -exec stat --format="%n/%s/%Y" {} \; | sort
+	find * \
+		-maxdepth 0 \
+		-type f \
+		-exec stat --format="%n/%s/%Y" {} \; | sort
 	# filename/size-in-bytes/last-modified-timestamp
-}
-
-lstl() {
-	# for current dir
-
-	lst_list="$(lst)"
-	# don't proceed with empty list
-	[ -z "$lst_list" ] \
-		&& return
-	# if .lst exists and is outdated
-	__diff="$(diff .lst <(echo "$lst_list"))"
-	[ -f .lst ] && [ ! -z "$__diff" ] \
-		&& bkp .lst
-	echo "$lst_list" >.lst
 }
 
 #############################################
 
+md5() {
+	[ -f "$1" ] || return
+	md5sum "$1" | cut -f1 -d' '
+}
+
 rm_file() {
 	rm_filename="${1%/*/*}"
-	echo "remove $rm_filename"
+	file_md5=$(md5 "$DIR_SRC/$dir_path/$rm_filename")
+	echo "removing $DIR_TRG/$dir_path/$rm_filename ($file_md5)" >>"$DIR_TRASH/rm.log"
+	rm -f "$DIR_SRC/$dir_path/$rm_filename"
 }
 
 add_file() {
 	new_filename="${1%/*/*}"
-	echo "add $new_filename"
+	file_md5=$(md5 "$DIR_SRC/$dir_path/$new_filename")
+	echo "adding $new_filename ($file_md5)"
+	
+	[ -f "$DIR_MD5/$md5" ] \
+		|| cp -p "$DIR_SRC/$dir_path/$new_filename" "$DIR_MD5/$file_md5"
+	
+	# hardlink to md5
+	ln "$DIR_MD5/$file_md5" "$DIR_TRG/$dir_path/$new_filename"
 }
 
 process_diff() {
 	while read diff_line; do
-		echo "$diff_line"
+		# echo "$diff_line"
 		[[ "$diff_line" =~ ^'> ' ]] && add_file "${diff_line#> }"
 		[[ "$diff_line" =~ ^'< ' ]] && rm_file "${diff_line#> }"
 	done
 }
 
-# process_dir() {
-	# echo = src: $dir_path_src
-	# dir_path="${dir_path_src#$DIR_SRC/}"
-	# echo = src: $dir_path
+process_dir() {
+	dir_path="${dir_path_src#$DIR_SRC}"
+	dir_path="${dir_path#/}"
+	echo = $dir_path
 	
-	# echo "$DIR_TRG/$dir_path/.lst"
-	# # if target not yet exists, create
-	# [ -d "$DIR_TRG/$dir_path" ] \
-		# || mkdir "$DIR_TRG/$dir_path"
-	# # go to target
-	# cd "$DIR_TRG/$dir_path" \
-		# || return
-	# # refresh target's .lst
-	# lstl
-	
-	# # if source dir is empty, that's all
-	# dir_is_empty "$dir_path_src" \
-		# && return
-	
-	# # go to source dir
-	# cd "$dir_path_src" 
-	# # create new source .lst in temporary location
-	# lst >"$LST_TMP_FILE"
-	
-	# # compare only if target is not empty
-	# if [ -s "$DIR_TRG/$dir_path/.lst" ]; then
-		# lst_diff=$(diff "$DIR_TRG/$dir_path/.lst" "$LST_TMP_FILE")
-		# if [ ! -z "$lst_diff" ]; then 
-			# echo -e "$lst_diff" | process_diff
-		# fi
-	# else
-		# echo "empty target dir"
-		# # add all files from source
+	# if target not yet exists, create
+	[ -d "$DIR_TRG/$dir_path" ] \
+		|| mkdir "$DIR_TRG/$dir_path"
 		
-		# # find * -maxdepth 0 -type f \
-			# # -exec cp -p {} "$DIR_TRG/$dir_path/" \;
-			# # -exec rsync -vt {} "$DIR_TRG/$dir_path/" \;
-			
-		# cd "$DIR_TRG/$dir_path/"
-		# lstl
-	# fi
+	# create new source and target .lst's in temporary location
+	lst "$DIR_SRC/$dir_path" >"$LST_SRC_TMP_FILE"
+	lst "$DIR_TRG/$dir_path" >"$LST_TRG_TMP_FILE"
 	
+	diff "$LST_TRG_TMP_FILE" "$LST_SRC_TMP_FILE" \
+		| process_diff
+}
 
 
 #################################################
 # MAIN
 
-[ -z "$1" ] || [ -z "$2" ] \
-	&& throw 1 "wrong syntax, source and target-root dirs required.\n$HELP_MSG"
+init "$1" "$2" "$3"
 
-DIR_SRC="$(readlink -e $1)"
-DIR_TRG="$(readlink -e $2)"
-
-[ -d "$DIR_SRC" ] \
-	&& throw 2 "wrong source dir ($DIR_SRC)."
-[ -d "$DIR_TRG" ] 
-	&& throw 3 "wrong target-root dir ($DIR_TRG)."
-dir_is_empty "$DIR_SRC" \
-	&& throw 4 "source dir ($DIR_SRC) is empty. Maybe not mounted?"
-
-#################################################
 while read -d '' dir_path_src; do
-	echo process "$dir_path_src"
-	# process_dir </dev/null
+	# echo process "$dir_path_src"
+	process_dir </dev/null
 done < <(find "$DIR_SRC" -type d -print0)
-
-
 
 #################################################
 # cleanup & exit
 
-rm -f "$LST_TMP_FILE"
+rm -f "$LST_SRC_TMP_FILE"
+rm -f "$LST_TRG_TMP_FILE"
+
+#2DO
+# ?remove old orphin md5s
 
 exit 0
