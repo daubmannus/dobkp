@@ -1,0 +1,189 @@
+#!/bin/bash
+
+BKUP_ROOT='/home/theo/bkup'
+
+DIR_MD5="$BKUP_ROOT"/md5
+DIR_SRC="$BKUP_ROOT"/mnt
+DIR_TRG="$BKUP_ROOT"/tree
+DIR_RC="$BKUP_ROOT"/rc
+DIR_TRASH="$BKUP_ROOT"/trash
+
+LST_TMP_FILE="$BKUP_ROOT"/.lst.tmp
+
+#2DO:
+# startup script (search)
+# [ -z "$BKUP_ROOT" ] \
+# && throw 1 "$BKUP_ROOT is not defined."
+
+throw() {
+	ERR=$1
+	MSG="$2"
+	[ -z MSG ] && MSG='unknown'
+	[ -z ERRCODE ] && ERRCODE=254
+	echo "error: $MSG" 1>&2
+	exit $ERR
+}
+
+warn() {
+	echo "WARNING: $1" 1>&2
+}
+
+dir_is_empty() {
+	[ -z "$1" ] && set -- "."
+	[ ! "$(ls -A "$1")" ]
+}
+
+#############################################
+# UTILS INCLUDED AS FUNCTIONS
+
+bkp() {
+	for param in "$@"; do
+		cp -p "$param" "$param".bkp$(stat -c %Y "$param")~
+	done
+}
+
+lst() {
+	# for current dir
+	# if not empty
+	dir_is_empty && return
+	
+	# include hidden
+	shopt -s dotglob
+	# and exclude ".lst"
+	find * ! -name ".lst" -maxdepth 0 -type f -exec stat --format="%n/%s/%Y" {} \; | sort
+	# filename/size-in-bytes/last-modified-timestamp
+}
+
+lstl() {
+	# for current dir
+
+	lst_list="$(lst)"
+	# don't proceed with empty list
+	[ -z "$lst_list" ] \
+		&& return
+	# if .lst exists and is outdated
+	__diff="$(diff .lst <(echo "$lst_list"))"
+	[ -f .lst ] && [ ! -z "$__diff" ] \
+		&& bkp .lst
+	echo "$lst_list" >.lst
+}
+
+#############################################
+
+rm_file() {
+	rm_filename="${1%/*/*}"
+	echo "remove $rm_filename"
+}
+
+add_file() {
+	new_filename="${1%/*/*}"
+	echo "add $new_filename"
+}
+
+process_diff() {
+	while read diff_line; do
+		echo "$diff_line"
+		[[ "$diff_line" =~ ^'> ' ]] && add_file "${diff_line#> }"
+		[[ "$diff_line" =~ ^'< ' ]] && rm_file "${diff_line#> }"
+	done
+}
+
+process_dir() {
+	echo = src: $dir_path_src
+	dir_path="${dir_path_src#$DIR_SRC/}"
+	echo = src: $dir_path
+	
+	echo "$DIR_TRG/$dir_path/.lst"
+	# if target not yet exists, create
+	[ -d "$DIR_TRG/$dir_path" ] \
+		|| mkdir "$DIR_TRG/$dir_path"
+	# go to target
+	cd "$DIR_TRG/$dir_path" \
+		|| return
+	# refresh target's .lst
+	lstl
+	
+	# if source dir is empty, that's all
+	dir_is_empty "$dir_path_src" \
+		&& return
+	
+	# go to source dir
+	cd "$dir_path_src" 
+	# create new source .lst in temporary location
+	lst >"$LST_TMP_FILE"
+	
+	# compare only if target is not empty
+	if [ -s "$DIR_TRG/$dir_path/.lst" ]; then
+		lst_diff=$(diff "$DIR_TRG/$dir_path/.lst" "$LST_TMP_FILE")
+		if [ ! -z "$lst_diff" ]; then 
+			echo -e "$lst_diff" | process_diff
+		fi
+	else
+		echo "empty target dir"
+		# add all files from source
+		
+		# find * -maxdepth 0 -type f \
+			# -exec cp -p {} "$DIR_TRG/$dir_path/" \;
+			# -exec rsync -vt {} "$DIR_TRG/$dir_path/" \;
+			
+		cd "$DIR_TRG/$dir_path/"
+		lstl
+	fi
+	
+	# cat "$LST_TMP_FILE"
+	# echo "$DIR_TRG/$dir_path"
+	
+	# for filename in *; do
+		# [ -f "$filename" ] \
+		# && [ ! -h "$filename" ] \
+			# && check_file
+			# && lst_string="$(lst "$filename")"
+	# done
+	#sort .lst
+}
+
+process_collection() {
+	collection=${path_to_collection##*/}
+	echo "==== $collection ($path_to_collection) ====" 1>&2
+
+	if dir_is_empty "$path_to_collection"; then
+		echo "warning: empty collection ($collection), maybe not mounted." 1>&2
+	else 
+		while read -d '' dir_path_src; do
+			echo process "$dir_path_src"
+			process_dir </dev/null
+		done < <(find "$path_to_collection" -type d -print0)
+	fi
+}
+
+#################################################
+[ ! -d "$DIR_SRC" ] \
+	&& throw 2 "no source dir ($DIR_SRC).";
+dir_is_empty "$DIR_SRC" \
+	&& throw 3 "source dir ($DIR_SRC) is empty."
+
+#################################################
+while read -d '' path_to_collection; do
+	echo collection "$path_to_collection"
+	process_collection </dev/null
+done < <(find "$DIR_SRC" -mindepth 1 -maxdepth 1 -type d -print0)
+
+
+#2DO:
+#mount srcs from rcs/.../pre
+
+rm -f "$LST_TMP_FILE"
+
+#2DO:
+#umount srcs from rcs/.../post
+
+
+
+
+
+# function md5upd {
+	
+# }
+
+exit 0
+
