@@ -2,6 +2,11 @@
 
 HELP_MSG='Usage: dobkup SOURCE_DIR TARGET_ROOT_DIR [TARGET_DIR_NAME]'
 
+#2DO:
+# symlinks to dirs
+# symlinks to files
+# keep hardlinks
+
 throw() {
 	ERR=$1
 	MSG="$2"
@@ -52,7 +57,6 @@ init() {
 
 }
 
-
 #############################################
 # UTILS INCLUDED AS FUNCTIONS
 
@@ -70,7 +74,6 @@ lst() {
 	
 	# include hidden
 	shopt -s dotglob
-	# and exclude ".lst"
 	find * \
 		-maxdepth 0 \
 		-type f \
@@ -85,17 +88,10 @@ md5() {
 	md5sum "$1" | cut -f1 -d' '
 }
 
-rm_file() {
-	rm_filename="${1%/*/*}"
-	file_md5=$(md5 "$DIR_SRC/$dir_path/$rm_filename")
-	echo "removing $DIR_TRG/$dir_path/$rm_filename ($file_md5)" >>"$DIR_TRASH/rm.log"
-	rm -f "$DIR_SRC/$dir_path/$rm_filename"
-}
-
 add_file() {
 	new_filename="${1%/*/*}"
 	file_md5=$(md5 "$DIR_SRC/$dir_path/$new_filename")
-	echo "adding $new_filename ($file_md5)"
+	echo "getting $new_filename ($file_md5)"
 	
 	[ -f "$DIR_MD5/$md5" ] \
 		|| cp -p "$DIR_SRC/$dir_path/$new_filename" "$DIR_MD5/$file_md5"
@@ -104,18 +100,34 @@ add_file() {
 	ln "$DIR_MD5/$file_md5" "$DIR_TRG/$dir_path/$new_filename"
 }
 
+rm_file() {
+	rm_filename="${1%/*/*}"
+	file_md5=$(md5 "$DIR_TRG/$dir_path/$rm_filename")
+	echo "removing $DIR_TRG/$dir_path/$rm_filename ($file_md5)" | tee "$DIR_TRASH/rm.log"
+	rm -f "$DIR_TRG/$dir_path/$rm_filename"
+}
+
 process_diff() {
 	while read diff_line; do
 		# echo "$diff_line"
 		[[ "$diff_line" =~ ^'> ' ]] && add_file "${diff_line#> }"
-		[[ "$diff_line" =~ ^'< ' ]] && rm_file "${diff_line#> }"
+		[[ "$diff_line" =~ ^'< ' ]] && rm_file "${diff_line#< }"
 	done
+}
+
+rm_dir() {
+	[ -d "$1" ] \
+		&& echo "removing dir ($DIR_TRG/$dir_path/$1)" \
+		&& mkdir -p "$DIR_TRASH/$dir_path" \
+		&& mv "$DIR_TRG/$dir_path/$1" "$DIR_TRASH/$dir_path/"
 }
 
 process_dir() {
 	dir_path="${dir_path_src#$DIR_SRC}"
+	[ -z $dir_path ] && dir_path='.'
 	dir_path="${dir_path#/}"
-	echo = $dir_path
+	# echo = $dir_path
+	echo processing $dir_path_src
 	
 	# if target not yet exists, create
 	[ -d "$DIR_TRG/$dir_path" ] \
@@ -125,8 +137,19 @@ process_dir() {
 	lst "$DIR_SRC/$dir_path" >"$LST_SRC_TMP_FILE"
 	lst "$DIR_TRG/$dir_path" >"$LST_TRG_TMP_FILE"
 	
+	# echo "$LST_SRC_TMP_FILE"
+	# cat "$LST_SRC_TMP_FILE"
+	# echo "$LST_TRG_TMP_FILE"
+	# cat "$LST_TRG_TMP_FILE"
+	
 	diff "$LST_TRG_TMP_FILE" "$LST_SRC_TMP_FILE" \
 		| process_diff
+	
+	# process removed dirs
+	prefix="Only in $DIR_TRG/$dir_path: "
+	while read -d$'\n' rm_dir_fn; do
+		rm_dir "${rm_dir_fn#$prefix}"
+	done < <(diff -q "$DIR_TRG/$dir_path" "$DIR_SRC/$dir_path" | grep "^$prefix")
 }
 
 
@@ -139,6 +162,7 @@ while read -d '' dir_path_src; do
 	# echo process "$dir_path_src"
 	process_dir </dev/null
 done < <(find "$DIR_SRC" -type d -print0)
+# done < <(find "$DIR_SRC" -mindepth 1 -type d -print0)
 
 #################################################
 # cleanup & exit
