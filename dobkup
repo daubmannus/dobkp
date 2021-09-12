@@ -2,6 +2,13 @@
 
 HELP_MSG='Usage: dobkup SOURCE_DIR TARGET_ROOT_DIR [TARGET_DIR_NAME]'
 
+# uncomment for each processed dir in output
+# VERBOSE=1
+
+# 2DO: options
+# -v, --verbose
+
+CHANGES=0
 
 throw() {
 	ERR=$1
@@ -26,18 +33,21 @@ dir_is_empty() {
 	[ ! "$(ls -A "$1")" ]
 }
 
+#########################################
 init() {
+	
+	
 	[ -z "$1" ] || [ -z "$2" ] \
-		&& throw 1 "wrong syntax, source and target-root dirs required.\n$HELP_MSG"
+		&& throw 2 "wrong syntax, source and target-root dirs required.\n$HELP_MSG"
 
 	DIR_SRC="$(readlink -e $1)"
 	DIR_TRG="$(readlink -e $2)"
 	[ -d "$DIR_SRC" ] \
-		|| throw 2 "wrong source dir ($DIR_SRC)."
+		|| throw 3 "wrong source dir ($DIR_SRC)."
 	dir_is_empty "$DIR_SRC" \
-		&& throw 3 "source dir ($DIR_SRC) is empty. Maybe not mounted?"
+		&& throw 4 "source dir ($DIR_SRC) is empty. Maybe not mounted?"
 	[ -d "$DIR_TRG" ] \
-		|| throw 4 "wrong target dir ($DIR_TRG). Create it first."
+		|| throw 5 "wrong target dir ($DIR_TRG). Create it first."
 	
 	DIR_MD5="$DIR_TRG"/.md5s
 	[ -d "$DIR_MD5" ] || mkdir "$DIR_MD5"
@@ -49,13 +59,13 @@ init() {
 	[ -z "$TARGET_DIR_NAME" ] && TARGET_DIR_NAME="$(printf $DIR_SRC | tr / % )"
 	
 	DIR_TRASH="$DIR_TRG"/.trash/"$TARGET_DIR_NAME"
-	[ -d "$DIR_TRASH" ] || mkdir "$DIR_TRASH"
+	[ -d "$DIR_TRASH" ] || mkdir -p "$DIR_TRASH"
 
 	
 	DIR_TRG="$DIR_TRG/$TARGET_DIR_NAME"
 	[ -d "$DIR_TRG" ] \
 		|| mkdir "$DIR_TRG" \
-		|| throw 5 "can't create target dir ($DIR_TRG)."
+		|| throw 6 "can't create target dir ($DIR_TRG)."
 		
 
 }
@@ -102,12 +112,15 @@ add() {
 	if [ -L "$DIR_SRC/$dir_path/$fn" ]; then 
 	# symlink
 		slnk_target="$(readlink $DIR_SRC/$dir_path/$fn)"
-		echo "add: $fn -> $slnk_target" 
-		ln -s "$slnk_target" "$DIR_TRG/$dir_path/$fn"
+		((++CHANGES))
+		echo "#$CHANGES add: $fn -> $slnk_target" 
+		# ln -s "$slnk_target" "$DIR_TRG/$dir_path/$fn"
+		ln-cygwin -s "$slnk_target" "$DIR_TRG/$dir_path/$fn"
 	elif [ -f "$DIR_SRC/$dir_path/$fn" ]; then
 	# plane file
 		file_md5=$(md5 "$DIR_SRC/$dir_path/$fn")
-		echo "add: $fn ($file_md5)"
+		((++CHANGES))
+		echo "#$CHANGES add: $fn ($file_md5)"
 	
 		[ -f "$DIR_MD5/$file_md5" ] \
 			|| cp -p "$DIR_SRC/$dir_path/$fn" "$DIR_MD5/$file_md5"
@@ -121,7 +134,8 @@ del() {
 	mkdir -p "$DIR_TRASH/$dir_path"
 	mv "$DIR_TRG/$dir_path/$fn" "$DIR_TRASH/$dir_path/"
 	msg="$DIR_TRG/$dir_path/$fn [$1]"
-	echo "del: $msg"
+	((++CHANGES))
+	echo "#$CHANGES del: $msg"
 	log "$msg" >"$DIR_TRASH"/deletion.log
 }
 
@@ -131,14 +145,15 @@ process_diff() {
 		[[ "$diff_line" =~ ^'> ' ]] && add "${diff_line#> }"
 		[[ "$diff_line" =~ ^'< ' ]] && del "${diff_line#< }"
 	done
+	return $((CHANGES))
 }
 
 process_dir() {
 	dir_path="${dir_path_src#$DIR_SRC}"
 	[ -z "$dir_path" ] && dir_path='.'
 	dir_path="${dir_path#/}"
-	# echo = $dir_path
-	echo in $dir_path_src/
+	[ -z "$VERBOSE" ] \
+		|| echo in $dir_path_src/
 	
 	# if target not yet exists, create
 	[ -d "$DIR_TRG/$dir_path" ] \
@@ -155,6 +170,7 @@ process_dir() {
 	
 	diff "$LST_TRG_TMP_FILE" "$LST_SRC_TMP_FILE" \
 		| process_diff
+	((CHANGES=$?))
 }
 
 
@@ -166,6 +182,12 @@ init "$1" "$2" "$3"
 while read -d '' dir_path_src; do
 	# echo process "$dir_path_src"
 	process_dir </dev/null
+	# ((CHANGES+=$?))
+	# echo '?' $?
+	# echo CHANGES $CHANGES
+
+	# process_dir </dev/null
+
 done < <(find "$DIR_SRC" -type d -print0)
 
 #################################################
@@ -180,4 +202,8 @@ rm -f "$LST_TRG_TMP_FILE"
 #2DO
 # ?remove old orphin md5s
 
+
+# [ -z "$VERBOSE" ] || echo Total changes: $CHANGES
+((CHANGES==0)) || exit 1
+ 
 exit 0
